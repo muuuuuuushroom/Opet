@@ -170,14 +170,11 @@ def _count_from_pil(pil_img: Image.Image) -> int:
 def predict_zip(zip_path):
     """
     Gradio inputs: gr.File -> `zip_path` typically is a tempfile.NamedTemporaryFile-like.
-    兼容：str 路径 / 对象带 .name
     Returns:
-      - dataframe rows: [[filename, count], ...]
-      - summary text
       - excel filepath (.xlsx)
       - visualizations zip filepath (.zip)
+      - dataframe rows: [[filename, count], ...]
     """
-    # 兼容 gr.File 返回对象
     if hasattr(zip_path, "name"):
         zip_path = zip_path.name
 
@@ -189,7 +186,6 @@ def predict_zip(zip_path):
 
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-    # 准备/清空可视化输出目录
     base_vis_dir = Path("./visualizations_cache/from_zips")
     if base_vis_dir.exists():
         for p in base_vis_dir.iterdir():
@@ -206,13 +202,13 @@ def predict_zip(zip_path):
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(tmpdir)
         except Exception as e:
-            return [], f"解压失败：{e}", None, None
+            return None, None, []
 
         files = [p for p in Path(tmpdir).rglob("*") if p.is_file() and p.suffix.lower() in exts]
         files.sort(key=lambda p: str(p).lower())
 
         if not files:
-            return [], "压缩包内未找到图片文件", None, None
+            return None, None, []
 
         for p in files:
             try:
@@ -245,7 +241,7 @@ def predict_zip(zip_path):
             except Exception as e:
                 rows.append([p.name, f"失败: {e}"])
 
-    # 导出 Excel
+    # Export Excel
     excel_path = str(base_vis_dir / "counts.xlsx")
     try:
         df = pd.DataFrame(rows, columns=["文件名", "计数/状态"])
@@ -254,7 +250,7 @@ def predict_zip(zip_path):
         excel_path = None
         rows.append(["__export__", f"Excel导出失败: {e}"])
 
-    # 打包可视化图片 zip
+    # Export visualization zip
     vis_zip_path = str(base_vis_dir / "visualizations.zip")
     try:
         with zipfile.ZipFile(vis_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
