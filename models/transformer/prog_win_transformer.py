@@ -105,10 +105,10 @@ class WinEncoderTransformer(nn.Module):
                 nn.init.xavier_uniform_(p)
     
     def sanitize_mask(self, attn_mask: torch.Tensor) -> torch.Tensor:
-        if attn_mask.ndim == 2:            # (B_win, L)
+        if (attn_mask.ndim == 2):            # (B_win, L)
             full = attn_mask.all(dim=-1)    # (B_win, )
             attn_mask[full, -1] = False
-        elif attn_mask.ndim == 3:          # (B_win, L, L)
+        elif (attn_mask.ndim == 3):          # (B_win, L, L)
             full = attn_mask.all(dim=-1).all(dim=-1)
             attn_mask[full, :, -1] = False
         return attn_mask

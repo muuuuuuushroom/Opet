@@ -7,11 +7,11 @@ weight_decay: 0.0001
 clip_max_norm: 0.1
 
 epochs: 1500
-seed: 3407 # 42, 3407
+seed: 42 # 42, 3407
 eval_freq: 2
 
 # model parameters
-backbone: swin_t 
+backbone: vgg16_bn
 position_embedding: sine
 attn_type: softmax
 dec_layers: 2
@@ -20,12 +20,14 @@ hidden_dim: 256
 dropout: 0.0
 nheads: 8
 backbone_num_channels: 512 # 512
-sparse_stride: 16 #16
-dense_stride: 8 #8
-enc_win_list: [[16, 8], [16, 8], [8, 4], [8, 4]] #[[32, 16], [32, 16], [16, 8], [16, 8]] #[[16, 8], [16, 8], [8, 4], [8, 4]]
-context_patch: [64, 32] #[128, 64] #[16, 16] #
-sparse_dec_win_size: [8, 4] #[16, 8] #
-dense_dec_win_size: [4, 2] #[8, 4] #
+sparse_stride: 8 #16
+dense_stride: 4 #8
+enc_win_list: [[32, 16], [32, 16], [16, 8], [16, 8]] #[[64, 32], [64, 32], [32, 16], [32, 16]] #[[32, 16], [32, 16], [16, 8], [16, 8]]
+context_patch: [256, 128] #[128, 64]
+sparse_dec_win_size: [16, 8] # [32, 16] #[16, 8]
+dense_dec_win_size: [8, 4] #[16, 8] #[8, 4]
+# sparse_dec_win_size: [8, 4]
+# dense_dec_win_size: [4, 2]
 syn_bn: 0
 
 # loss parameters
@@ -49,9 +51,9 @@ augmented: False
 opt_query_con: False
 
 # baseline setting
-attn_splitter: True
+attn_splitter: False
 # Orattn: True
-encoder_free: True
+encoder_free: False
 
 # debug
 batch_size: 16
@@ -70,9 +72,9 @@ fpn_type: 'original'  # panet, original
 
 # one key setting
 one_key_hfy: False # backbone Feature
-one_key_zlt: True # attnsplit, boxquery, mixedloss
+one_key_zlt: False # attnsplit, boxquery, mixedloss
 
 # july stage para
 matcher: 'hun' # stable, hun 
 
-output_dir: t_base_zlt #t_attnsplit_boxquery_mixedloss_ransize0618
+output_dir: base_pet333 #t_attnsplit_boxquery_mixedloss_ransize0618

@@ -21,17 +21,21 @@ from util.custom_log import *
 def get_args_parser():
     parser = argparse.ArgumentParser('Set Point Query Transformer', add_help=False)
     
-    parser.add_argument('--cfg', default='/data/zlt/RemoteSensePET/outputs/Ship/t_noencoder_attn_opre_bs16_withen_box1_layer6/config.yaml')
-    parser.add_argument('--gt_determined', default='100', help='test')
+    parser.add_argument('--cfg', default='outputs/soy_newran/base_pet/config.yaml')
+    parser.add_argument('--gt_determined', default='10000', help='test')
     # misc parameters
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
-    parser.add_argument('--resume', default='/data/zlt/RemoteSensePET/outputs/Ship/t_noencoder_attn_opre_bs16_withen_box1_layer6/best_checkpoint.pth', help='resume from checkpoint')
+    parser.add_argument('--resume', default='outputs/soy_newran/base_pet/best_checkpoint.pth', help='resume from checkpoint')
     parser.add_argument('--vis_dir', default=None)
     parser.add_argument('--eval_pad', default='padding_center')
     parser.add_argument('--eval_robust', default=[])
     parser.add_argument('--robust_para', default=None)
     parser.add_argument('--prob_map_lc', default=None)
+
+    # 新增：是否启用按 shape 过滤的加载（避免 size mismatch 报错）
+    parser.add_argument('--safe_load', action='store_true',
+                        help='filter ckpt state_dict by key+shape before loading (avoid size mismatch)')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -41,15 +45,28 @@ def get_args_parser():
     return parser
 
 
+def _filter_state_dict_by_shape(model, ckpt_state):
+    """只保留在当前模型中存在且shape一致的权重，避免 size mismatch."""
+    model_state = model.state_dict()
+    filtered = {}
+    skipped = []  # (k, ckpt_shape, model_shape or None, reason)
+
+    for k, v in ckpt_state.items():
+        if k not in model_state:
+            skipped.append((k, tuple(v.shape), None, "missing_in_model"))
+            continue
+        if model_state[k].shape != v.shape:
+            skipped.append((k, tuple(v.shape), tuple(model_state[k].shape), "shape_mismatch"))
+            continue
+        filtered[k] = v
+
+    return filtered, skipped
+
+
 def main(args):
     utils.init_distributed_mode(args)
     print(args)
     device = torch.device(args.device)
-    
-    # if args.dataset_file in ['Ship', 'Car', 'People']:
-    #     from engine_rsc import evaluate
-    # elif args.dataset_file in ['RTC', 'SOY']:
-    #     from engine import evaluate
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -86,8 +103,25 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+
+        ckpt_state = checkpoint.get('model', checkpoint)
+
+        if getattr(args, "safe_load", False):
+            ckpt_state, skipped = _filter_state_dict_by_shape(model_without_ddp, ckpt_state)
+            print(f"[safe_load] will load {len(ckpt_state)} tensors, skip {len(skipped)} tensors")
+            # 只打印前若干个，避免刷屏
+            for k, ck, ms, reason in skipped[:30]:
+                print(f"[safe_load][skip] {reason}: {k} ckpt={ck} model={ms}")
+            if len(skipped) > 30:
+                print(f"[safe_load] ... and {len(skipped)-30} more skipped keys")
+
+        missing, unexpected = model_without_ddp.load_state_dict(ckpt_state, strict=False)
         print(f"load successfully from ckpt: {args.resume}")
+        if missing:
+            print(f"[load] missing_keys: {len(missing)}")
+        if unexpected:
+            print(f"[load] unexpected_keys: {len(unexpected)}")
+
         cur_epoch = checkpoint['epoch'] - 1 if 'epoch' in checkpoint else 0
 
     # evaluation

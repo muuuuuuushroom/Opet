@@ -1327,6 +1327,6 @@ def build_pet(args):
                              sparse_stride=args.sparse_stride, dense_stride=args.dense_stride,
                              map_loss=args.prob_map_lc,
                              opt_query=args.opt_query_decoder,
-                             prob_fixed=args.prob_bandwidth)
+                             prob_fixed=args.prob_bandwidth if hasattr(args, 'prob_bandwidth') else 'fixed')
     criterion.to(device)
     return model, criterion

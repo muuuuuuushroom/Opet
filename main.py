@@ -20,6 +20,8 @@ from engine import evaluate, train_one_epoch
 from models import build_model
 from util.custom_log import *
 
+from prodigyopt import Prodigy
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set Point Query Transformer', add_help=False)
@@ -88,6 +90,20 @@ def main(args):
     ]
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                   weight_decay=args.weight_decay)
+    # auto learning rate
+    # param_dicts = [
+    #     {"params": [p for n, p in model_without_ddp.named_parameters() if "backbone" not in n and p.requires_grad], "lr": 1.0},
+    #     {"params": [p for n, p in model_without_ddp.named_parameters() if "backbone" in n and p.requires_grad], "lr": 1.0},
+    # ]
+
+    # optimizer = Prodigy(
+    #     param_dicts, 
+    #     lr=1.0, 
+    #     weight_decay=args.weight_decay, 
+    #     decouple=True,
+    #     use_bias_correction=True,
+    #     safeguard_warmup=True,
+    # )
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.epochs)
 
     # build dataset

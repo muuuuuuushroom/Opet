@@ -1,8 +1,8 @@
 #!/bin/bash
-export DEFAULT_MASTER_PORT=10000
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-export DEFAULT_NPROC_PER_NODE=4
-export DEFAULT_CONFIG_FILE_PATH='configs_con/Crowd/SHA.yaml'
+export DEFAULT_MASTER_PORT=10006
+export CUDA_VISIBLE_DEVICES=4,5
+export DEFAULT_NPROC_PER_NODE=2
+export DEFAULT_CONFIG_FILE_PATH='configs_con/Others/soybeam.yaml' # 'configs_con/Crowd/SHA.yaml'
 export OMP_NUM_THREADS=4 # Set the number of OpenMP threads
 # 'configs_con/Others/soybeam.yaml'
 # "configs_con/TGRS/Ship.yaml"
@@ -10,6 +10,7 @@ export OMP_NUM_THREADS=4 # Set the number of OpenMP threads
 # nohup sh train.sh> output_nohup/RS/Ship/base_s5.log 2>&1 &
 # nohup sh train.sh> output_nohup/RS/Car/base_s2.log 2>&1 &
 # nohup sh train.sh> output_nohup/RS/People/base_s2.log 2>&1 &
+# nohup sh train.sh> base_333.log 2>&1 &
 
 NPROC_PER_NODE=${2:-$DEFAULT_NPROC_PER_NODE}
 MASTER_PORT=${3:-$DEFAULT_MASTER_PORT}

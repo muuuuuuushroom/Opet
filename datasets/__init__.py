@@ -27,8 +27,8 @@ data_path = {
     'Car': 'data/Car',
     
     'CORN': '/data/zlt/PET/origin_pet/PET/data/dataset_corn',
-    'SOY': '/data/zlt/RemoteSensePET/data/soybeam',
-    'SOY_evon': '/data/zlt/RemoteSensePET/data/soy_test',
+    'SOY': 'data/soybean',
+    'SOY_evon': 'data/soy_test',
     
     
     'NWPU': 'data/Crowd_Counting/NWPU_Crowd',
