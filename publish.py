@@ -179,10 +179,10 @@ def predict_zip(zip_path):
         zip_path = zip_path.name
 
     if not isinstance(zip_path, str) or not os.path.isfile(zip_path):
-        return [], "无效的压缩包路径", None, None
+        return None, None, []
 
     if not zip_path.lower().endswith(".zip"):
-        return [], "仅支持 .zip 压缩包", None, None
+        return None, None, []
 
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
