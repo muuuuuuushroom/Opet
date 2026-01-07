@@ -45,7 +45,16 @@ def initialize_model(cfg_path, checkpoint_path):
     # global_transform = None  # dataset.transform
     print('Model and dataset loaded successfully')
     
-    
+def _maybe_free_infer_cuda_memory():
+    """释放推理过程中产生的临时显存缓存；不影响已加载的model常驻显存。"""
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            # 可选：更激进的回收（通常不必，但你已有在OOM里用它）
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
 def visualization(samples, pred, vis_dir):
     """
     Visualize predictions
@@ -80,6 +89,15 @@ def visualization(samples, pred, vis_dir):
 
             cv2.imwrite(os.path.join(vis_dir, 'single/example.jpg'), sample_vis)
 
+def _handle_oom(e: Exception, context: str):
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+    raise gr.Error(f"{context}：CUDA OOM（显存不足）。请尝试换小图/减少并发/改用CPU。原始信息：{e}")
+
 def predict(image):
     """
     Gradio inputs: gr.Image(type="filepath") -> `image` is a filepath (str)
@@ -90,14 +108,6 @@ def predict(image):
     # read image from filepath
     pil_img = Image.open(image).convert("RGB")
 
-    # 2) resize
-    # w, h = pil_img.size
-    # base_size = 256
-    # new_w = (w + base_size - 1) // base_size * base_size
-    # new_h = (h + base_size - 1) // base_size * base_size
-    # if (new_w, new_h) != (w, h):
-    #     pil_img = pil_img.resize((new_w, new_h), Image.BICUBIC)
-    # print(f"Adjusted image size: {pil_img.size}")
     pil_to_tensor = standard_transforms.ToTensor()
     tensor_image = pil_to_tensor(pil_img)
 
@@ -110,36 +120,58 @@ def predict(image):
 
     samples = nested_tensor_from_tensor_list([tensor_image]).to(device)
 
-    with torch.no_grad():
-        outputs = global_model(samples, test=True, targets=None)
-        outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
-        outputs_points = outputs['pred_points'][0]
-        outputs_offsets = outputs['pred_offsets'][0]
-        outputs_queries = outputs['points_queries']
-    predict_cnt = len(outputs_scores)
-    print('Total Counts:', predict_cnt)
-    counts_text = f"计数值： {predict_cnt}"
-    
-    # visualization
-    vis_dir = "./visualizations_cache"
-    os.makedirs(vis_dir, exist_ok=True)
-    vis_path = os.path.join(vis_dir, "example.jpg")
+    try:
+        with torch.no_grad():
+            outputs = global_model(samples, test=True, targets=None)
+            outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
+            outputs_points = outputs['pred_points'][0]
+            outputs_offsets = outputs['pred_offsets'][0]
+            outputs_queries = outputs['points_queries']
+        predict_cnt = len(outputs_scores)
+        print('Total Counts:', predict_cnt)
+        counts_text = f"计数值： {predict_cnt}"
+        
+        # visualization
+        vis_dir = "./visualizations_cache"
+        os.makedirs(vis_dir, exist_ok=True)
+        vis_path = os.path.join(vis_dir, "example.jpg")
 
-    vis_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    pred_points = outputs.get("pred_points", None)
-    
-    img_h, img_w = samples.tensors.shape[-2:]
-    if pred_points is not None:
-        pts = pred_points[0]
-        pts = [[pt[0]*img_h, pt[1]*img_w] for pt in pts] 
-        if isinstance(pts, torch.Tensor):
-            pts = pts.detach().cpu().numpy()
-            
-        for p in pts:
-            vis_bgr = cv2.circle(vis_bgr, (int(p[1]), int(p[0])), 3, (0, 0, 255), -1)
+        vis_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        pred_points = outputs.get("pred_points", None)
+        
+        img_h, img_w = samples.tensors.shape[-2:]
+        if pred_points is not None:
+            pts = pred_points[0]
+            pts = [[pt[0]*img_h, pt[1]*img_w] for pt in pts] 
+            if isinstance(pts, torch.Tensor):
+                pts = pts.detach().cpu().numpy()
+                
+            for p in pts:
+                vis_bgr = cv2.circle(vis_bgr, (int(p[1]), int(p[0])), 3, (0, 0, 255), -1)
 
-    cv2.imwrite(vis_path, vis_bgr)
-    return vis_path, counts_text
+        cv2.imwrite(vis_path, vis_bgr)
+        return vis_path, counts_text
+    except torch.cuda.OutOfMemoryError as e:
+        _handle_oom(e, "单图推理失败")
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            _handle_oom(e, "单图推理失败")
+        raise
+    finally:
+        # 释放本次推理产生的临时显存（不动global_model）
+        try:
+            del samples, tensor_image
+        except Exception:
+            pass
+        try:
+            del outputs
+        except Exception:
+            pass
+        try:
+            del outputs_scores
+        except Exception:
+            pass
+        _maybe_free_infer_cuda_memory()
 
 def _count_from_pil(pil_img: Image.Image) -> int:
     global global_model
@@ -155,17 +187,24 @@ def _count_from_pil(pil_img: Image.Image) -> int:
     tensor_image = normalize(tensor_image).to(device)
     samples = nested_tensor_from_tensor_list([tensor_image]).to(device)
 
-    with torch.no_grad():
-        outputs = global_model(samples, test=True, targets=None)
-        # outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
-    # return int(len(outputs_scores))
-    img_h, img_w = samples.tensors.shape[-2:]
-    pred_points = outputs.get("pred_points", None)
-    if pred_points is not None:
-        pts = pred_points[0]
-        pts = [[pt[0]*img_h, pt[1]*img_w] for pt in pts]
-    
-    return outputs, pts
+    outputs = None
+    pts = None
+    try:
+        with torch.no_grad():
+            outputs = global_model(samples, test=True, targets=None)
+        img_h, img_w = samples.tensors.shape[-2:]
+        pred_points = outputs.get("pred_points", None)
+        if pred_points is not None:
+            _pts = pred_points[0]
+            pts = [[pt[0]*img_h, pt[1]*img_w] for pt in _pts]
+        return outputs, pts
+    finally:
+        # 只清理输入/中间变量；outputs要返回给上层就不del它
+        try:
+            del samples, tensor_image
+        except Exception:
+            pass
+        _maybe_free_infer_cuda_memory()
 
 def predict_zip(zip_path):
     """
@@ -197,6 +236,7 @@ def predict_zip(zip_path):
 
     rows = []
     total = 0
+    oom_count = 0
     with tempfile.TemporaryDirectory(prefix="gr_zip_") as tmpdir:
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
@@ -211,6 +251,10 @@ def predict_zip(zip_path):
             return None, None, []
 
         for p in files:
+            outputs = None
+            outputs_scores = None
+            pil_img = None
+            pts = None
             try:
                 pil_img = Image.open(str(p)).convert("RGB")
                 outputs, pts = _count_from_pil(pil_img)
@@ -238,8 +282,40 @@ def predict_zip(zip_path):
 
                 rows.append([p.name, cnt])
                 total += cnt
+            except torch.cuda.OutOfMemoryError:
+                oom_count += 1
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.empty_cache()
+                        torch.cuda.ipc_collect()
+                    except Exception:
+                        pass
+                rows.append([p.name, "OOM: 显存不足"])
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    oom_count += 1
+                    if torch.cuda.is_available():
+                        try:
+                            torch.cuda.empty_cache()
+                            torch.cuda.ipc_collect()
+                        except Exception:
+                            pass
+                    rows.append([p.name, "OOM: 显存不足"])
+                else:
+                    rows.append([p.name, f"失败: {e}"])
             except Exception as e:
                 rows.append([p.name, f"失败: {e}"])
+            finally:
+                # 每张图推理结束就清理一次，避免批量累积显存碎片/缓存
+                try:
+                    del outputs_scores
+                except Exception:
+                    pass
+                try:
+                    del outputs
+                except Exception:
+                    pass
+                _maybe_free_infer_cuda_memory()
 
     # Export Excel
     excel_path = str(base_vis_dir / "counts.xlsx")
@@ -306,4 +382,4 @@ if __name__ == "__main__":
         checkpoint_path='outputs/soy_newran/base_pet333/best_checkpoint.pth'
     )
     # predict('data/soybean/images/24S2983-4-2.jpg')
-    gradio_demo()   
+    gradio_demo()
