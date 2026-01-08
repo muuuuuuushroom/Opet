@@ -338,42 +338,157 @@ def predict_zip(zip_path):
 
     return  excel_path, vis_zip_path, rows
 
-# Gradio 界面
-def gradio_demo():
-    with gr.Blocks() as demo:
-        gr.Markdown("# 大豆胞囊虫计数 Demo")
 
-        with gr.Tab("单张图片"):
-            with gr.Row():
-                in_img = gr.Image(type="filepath", label="上传图片")
-            with gr.Row():
-                clear_btn = gr.Button("清除")
-                submit_btn = gr.Button("提交", variant="primary") # primary 颜色通常为蓝色
-            with gr.Row():
-                out_img = gr.Image(type="filepath", label="预测结果")
-            with gr.Row():
-                out_txt = gr.Textbox(label="统计信息", lines=1)
-            submit_btn.click(fn=predict, inputs=[in_img], outputs=[out_img, out_txt])
-            clear_btn.click(
-                fn=lambda: [None, None, None], 
-                inputs=None, 
-                outputs=[in_img, out_img, out_txt]
-            )
-        with gr.Tab("压缩包ZIP批量计数"):
-            zip_in = gr.File(label="上传 .zip 压缩包文件", file_types=[".zip"])
-            batch_btn = gr.Button("开始批量计数", variant="primary")
+USER_CREDENTIALS = {"admin": "654321"}
+
+def check_login(username, password):
+    """验证登录信息"""
+    if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == password:
+        return True, "登录成功！"
+    else:
+        return False, "用户名或密码错误！"
+
+def gradio_demo():
+    with gr.Blocks(title="大豆胞囊虫计数系统 - 请先登录") as demo:
+        # 登录界面（初始显示）
+        with gr.Column(visible=True, elem_id="login_section") as login_section:
+            gr.Markdown("# 🔐 大豆胞囊虫计数系统")
+            gr.Markdown("### 请先登录以使用系统")
             
             with gr.Row():
-                out_excel = gr.File(label="导出计数Excel")
-                out_viszip = gr.File(label="下载所有可视化")
+                with gr.Column(scale=1):
+                    username = gr.Textbox(
+                        label="用户名", 
+                        value="admin",  # 默认用户名
+                        placeholder="输入用户名",
+                        scale=2
+                    )
+                with gr.Column(scale=1):
+                    password = gr.Textbox(
+                        label="密码", 
+                        type="password",
+                        value="654321",  # 默认密码
+                        placeholder="输入密码",
+                        scale=2
+                    )
             
-            out_table = gr.Dataframe(headers=["文件名", "计数/状态"], label="结果", wrap=True)
-            batch_btn.click(
-                fn=predict_zip,
-                inputs=[zip_in],
-                outputs=[out_excel, out_viszip, out_table]
-            )
-    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
+            with gr.Row():
+                login_btn = gr.Button("登录", variant="primary", size="lg")
+                clear_btn = gr.Button("清除", size="lg")
+            
+            login_status = gr.Textbox(label="登录状态", visible=False)
+        
+        # 主应用界面（初始隐藏）
+        with gr.Column(visible=False, elem_id="main_section") as main_section:
+            gr.Markdown("# 🌱 大豆胞囊虫计数 Demo")
+            
+            with gr.Tab("单图精细化点回归计数"):
+                with gr.Row():
+                    in_img = gr.Image(type="filepath", label="上传图片")
+                with gr.Row():
+                    clear_btn_main = gr.Button("清除")
+                    submit_btn = gr.Button("提交", variant="primary")
+                with gr.Row():
+                    out_img = gr.Image(type="filepath", label="预测结果")
+                with gr.Row():
+                    out_txt = gr.Textbox(label="统计信息", lines=1)
+                
+                submit_btn.click(fn=predict, inputs=[in_img], outputs=[out_img, out_txt])
+                clear_btn_main.click(
+                    fn=lambda: [None, None, None], 
+                    inputs=None, 
+                    outputs=[in_img, out_img, out_txt]
+                )
+            
+            with gr.Tab("高通量批量图像分析"):
+                zip_in = gr.File(label="上传 .zip 压缩包文件", file_types=[".zip"])
+                batch_btn = gr.Button("开始批量计数", variant="primary")
+                
+                with gr.Row():
+                    out_excel = gr.File(label="导出计数报表")
+                    out_viszip = gr.File(label="下载所有可视化")
+                
+                out_table = gr.Dataframe(headers=["文件名", "计数/状态"], label="结果", wrap=True)
+                batch_btn.click(
+                    fn=predict_zip,
+                    inputs=[zip_in],
+                    outputs=[out_excel, out_viszip, out_table]
+                )
+            
+            # 添加退出登录按钮
+            with gr.Row():
+                logout_btn = gr.Button("退出登录", variant="secondary")
+        
+        # 登录按钮事件
+        def login_action(username, password):
+            success, message = check_login(username, password)
+            if success:
+                return [
+                    gr.update(visible=False),  # 隐藏登录界面
+                    gr.update(visible=True),   # 显示主界面
+                    gr.update(value=message, visible=True)
+                ]
+            else:
+                try:
+                    gr.Warning(message)
+                except Exception:
+                    pass
+
+                return [
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    gr.update(value=message, visible=True)
+                ]
+        
+        # 清除按钮事件
+        def clear_login():
+            return [
+                gr.update(value="admin"),
+                gr.update(value="654321"),
+                gr.update(visible=False)
+            ]
+        
+        # 退出登录事件
+        def logout_action():
+            return [
+                gr.update(visible=True),   # 显示登录界面
+                gr.update(visible=False),  # 隐藏主界面
+                gr.update(value="", visible=False)
+            ]
+        
+        # 绑定事件
+        login_btn.click(
+            fn=login_action,
+            inputs=[username, password],
+            outputs=[login_section, main_section, login_status]
+        )
+        
+        clear_btn.click(
+            fn=clear_login,
+            inputs=None,
+            outputs=[username, password, login_status]
+        )
+        
+        logout_btn.click(
+            fn=logout_action,
+            inputs=None,
+            outputs=[login_section, main_section, login_status]
+        )
+        
+        # 回车键也可以触发登录
+        password.submit(
+            fn=login_action,
+            inputs=[username, password],
+            outputs=[login_section, main_section, login_status]
+        )
+    
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860, 
+        share=False,
+        show_error=True,
+        debug=True
+    )
 
 if __name__ == "__main__":
     
