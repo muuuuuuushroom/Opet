@@ -17,6 +17,9 @@ from pathlib import Path
 import shutil
 import pandas as pd
 
+CFG='outputs/soy_newran/base_pet333/config.yaml'
+CKPT='outputs/soy_newran/base_pet333/best_checkpoint.pth'
+
 global_model = None
 global_args = None
 global_transform = None  
@@ -75,7 +78,7 @@ def visualization(samples, pred, vis_dir):
         h, w = sample_vis.shape[:2]
         # draw ground-truth points (red)
         size = 3
-        # draw predictions (green)
+        # draw predictions
         for p in pred[idx]:
             sample_vis = cv2.circle(sample_vis, (int(p[1]), int(p[0])), size, (0, 255, 0), -1)
             
@@ -96,7 +99,7 @@ def _handle_oom(e: Exception, context: str):
             torch.cuda.ipc_collect()
         except Exception:
             pass
-    raise gr.Error(f"{context}：CUDA OOM（显存不足）。请尝试换小图/减少并发/改用CPU。原始信息：{e}")
+    raise gr.Error(f"{context}：CUDA OOM（显存不足）。请尝试换小图。原始信息：{e}")
 
 def predict(image):
     """
@@ -107,6 +110,13 @@ def predict(image):
 
     # read image from filepath
     pil_img = Image.open(image).convert("RGB")
+    # If resolution too large (e.g., >3000x3000), downsample longest side to 1600 while keeping aspect ratio
+    w, h = pil_img.size
+    if max(w, h) > 3200:
+        scale = 1600.0 / float(max(w, h))
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
 
     pil_to_tensor = standard_transforms.ToTensor()
     tensor_image = pil_to_tensor(pil_img)
@@ -178,6 +188,14 @@ def _count_from_pil(pil_img: Image.Image) -> int:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     pil_to_tensor = standard_transforms.ToTensor()
+    # If resolution too large (e.g., >3000x3000), downsample longest side to 1600 while keeping aspect ratio
+    w, h = pil_img.size
+    if max(w, h) > 3200:
+        scale = 1600.0 / float(max(w, h))
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        pil_img = pil_img.resize((new_w, new_h), resample=Image.BILINEAR)
+
     tensor_image = pil_to_tensor(pil_img.convert("RGB"))
 
     normalize = standard_transforms.Normalize(
@@ -356,21 +374,20 @@ def gradio_demo():
             gr.Markdown("### 请先登录以使用系统")
             
             with gr.Row():
-                with gr.Column(scale=1):
-                    username = gr.Textbox(
-                        label="用户名", 
-                        value="admin",  # 默认用户名
-                        placeholder="输入用户名",
-                        scale=2
-                    )
-                with gr.Column(scale=1):
-                    password = gr.Textbox(
-                        label="密码", 
-                        type="password",
-                        value="654321",  # 默认密码
-                        placeholder="输入密码",
-                        scale=2
-                    )
+                username = gr.Textbox(
+                    label="用户名", 
+                    value="admin",  # 默认用户名
+                    placeholder="输入用户名",
+                    scale=2
+                )
+            with gr.Row():
+                password = gr.Textbox(
+                    label="密码", 
+                    type="password",
+                    value="",  # 默认密码
+                    placeholder="输入密码",
+                    scale=2
+                )
             
             with gr.Row():
                 login_btn = gr.Button("登录", variant="primary", size="lg")
@@ -444,7 +461,7 @@ def gradio_demo():
         def clear_login():
             return [
                 gr.update(value="admin"),
-                gr.update(value="654321"),
+                gr.update(value=""),
                 gr.update(visible=False)
             ]
         
@@ -493,8 +510,7 @@ def gradio_demo():
 if __name__ == "__main__":
     
     initialize_model(
-        cfg_path='outputs/soy_newran/base_pet333/config.yaml', 
-        checkpoint_path='outputs/soy_newran/base_pet333/best_checkpoint.pth'
+        cfg_path=CFG, 
+        checkpoint_path=CKPT
     )
-    # predict('data/soybean/images/24S2983-4-2.jpg')
     gradio_demo()
