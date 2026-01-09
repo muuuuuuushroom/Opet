@@ -17,6 +17,11 @@ from pathlib import Path
 import shutil
 import pandas as pd
 
+import time
+import uuid
+
+# CFG='pretrained/config.yaml'
+# CKPT='pretrained/best_checkpoint.pth'
 CFG='outputs/soy_newran/base_pet333/config.yaml'
 CKPT='outputs/soy_newran/base_pet333/best_checkpoint.pth'
 
@@ -101,16 +106,30 @@ def _handle_oom(e: Exception, context: str):
             pass
     raise gr.Error(f"{context}：CUDA OOM（显存不足）。请尝试换小图。原始信息：{e}")
 
-def predict(image):
+def predict(image, session_dir: str, history: list):
     """
-    Gradio inputs: gr.Image(type="filepath") -> `image` is a filepath (str)
+    Gradio inputs:
+      - image: gr.Image(type="filepath")
+      - session_dir: gr.State(str)
+      - history: gr.State(list)
+    Returns:
+      - out_img_path
+      - out_txt
+      - updated history
+      - updated dataframe rows
     """
     global global_model, global_args, global_transform, global_criterion
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # read image from filepath
+    if not image or not isinstance(image, str) or not os.path.isfile(image):
+        raise gr.Error("请先上传图片。")
+
+    if not session_dir:
+        # 兜底：没有初始化 session 时，临时创建一个
+        _, session_dir = _new_session()
+
+    # read image
     pil_img = Image.open(image).convert("RGB")
-    # If resolution too large (e.g., >3000x3000), downsample longest side to 1600 while keeping aspect ratio
     w, h = pil_img.size
     if max(w, h) > 3200:
         scale = 1600.0 / float(max(w, h))
@@ -121,46 +140,73 @@ def predict(image):
     pil_to_tensor = standard_transforms.ToTensor()
     tensor_image = pil_to_tensor(pil_img)
 
-    # torchvision Normalize ImageNet
     normalize = standard_transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], 
+        mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225]
     )
-    tensor_image = normalize(tensor_image).to(device) # [C,H,W], float
-
+    tensor_image = normalize(tensor_image).to(device)
     samples = nested_tensor_from_tensor_list([tensor_image]).to(device)
+
+    outputs = None
+    outputs_scores = None
 
     try:
         with torch.no_grad():
             outputs = global_model(samples, test=True, targets=None)
             outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
-            outputs_points = outputs['pred_points'][0]
-            outputs_offsets = outputs['pred_offsets'][0]
-            outputs_queries = outputs['points_queries']
-        predict_cnt = len(outputs_scores)
-        print('Total Counts:', predict_cnt)
-        counts_text = f"计数值： {predict_cnt}"
-        
-        # visualization
-        vis_dir = "./visualizations_cache"
-        os.makedirs(vis_dir, exist_ok=True)
-        vis_path = os.path.join(vis_dir, "example.jpg")
 
+        predict_cnt = int(len(outputs_scores))
+        out_txt = f"计数值： {predict_cnt}"
+
+        # 可视化（先生成本次输出图）
         vis_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         pred_points = outputs.get("pred_points", None)
-        
+
         img_h, img_w = samples.tensors.shape[-2:]
         if pred_points is not None:
             pts = pred_points[0]
-            pts = [[pt[0]*img_h, pt[1]*img_w] for pt in pts] 
+            pts = [[pt[0] * img_h, pt[1] * img_w] for pt in pts]
             if isinstance(pts, torch.Tensor):
                 pts = pts.detach().cpu().numpy()
-                
             for p in pts:
                 vis_bgr = cv2.circle(vis_bgr, (int(p[1]), int(p[0])), 3, (0, 0, 255), -1)
 
-        cv2.imwrite(vis_path, vis_bgr)
-        return vis_path, counts_text
+        # === session 缓存：按编号保存输入/输出 ===
+        idx = len(history or [])
+        sess_dir = Path(session_dir)
+        _ensure_dir(sess_dir)
+
+        src_path = Path(image)
+        orig_stem = src_path.stem
+        orig_suffix = src_path.suffix.lower() or ".jpg"
+        
+        in_dst = sess_dir / f"{orig_stem}{orig_suffix}"
+        out_dst = sess_dir / f"{orig_stem}_pred{predict_cnt}.jpg"
+        
+        k = 1
+        while in_dst.exists() or out_dst.exists():
+            in_dst = sess_dir / f"{orig_stem}_{k}{orig_suffix}"
+            out_dst = sess_dir / f"{orig_stem}_{k}_pred{predict_cnt}.jpg"
+            k += 1
+
+        in_path_saved = _safe_copy(image, in_dst)
+        cv2.imwrite(str(out_dst), vis_bgr)
+        out_path_saved = str(out_dst)
+
+        item = {
+            "idx": idx,
+            "ts": _now_tag(),
+            "in_img": in_path_saved,
+            "out_img": out_path_saved,
+            "out_text": out_txt,
+            # "in_name": src_path.name, 
+        }
+        history = _append_history(history, item, limit=50)
+        history_df = _history_rows(history)
+        gallery_items = [it.get("out_img") for it in (history or []) if it.get("out_img")]
+
+        return out_path_saved, out_txt, history, history_df, gallery_items
+
     except torch.cuda.OutOfMemoryError as e:
         _handle_oom(e, "单图推理失败")
     except RuntimeError as e:
@@ -168,7 +214,6 @@ def predict(image):
             _handle_oom(e, "单图推理失败")
         raise
     finally:
-        # 释放本次推理产生的临时显存（不动global_model）
         try:
             del samples, tensor_image
         except Exception:
@@ -356,6 +401,152 @@ def predict_zip(zip_path):
 
     return  excel_path, vis_zip_path, rows
 
+def _now_tag() -> str:
+    return time.strftime("%Y.%m.%d-%H.%M.%S")
+
+def _ensure_dir(p: Path) -> Path:
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def _safe_copy(src: str, dst: Path) -> str:
+    """复制文件到指定位置并返回新路径；尽量保留元信息。"""
+    _ensure_dir(dst.parent)
+    shutil.copy2(src, dst)
+    return str(dst)
+
+def _session_root() -> Path:
+    # 每次打开页面生成一个 session_id；历史仅对本次访问有效
+    return Path("visualizations_cache") / "sessions"
+
+def _new_session() -> tuple[str, str]:
+    session_id = uuid.uuid4().hex
+    session_dir = _session_root() / session_id
+    _ensure_dir(session_dir)
+    return session_id, str(session_dir)
+
+def _clear_session_dir(session_dir: str):
+    try:
+        shutil.rmtree(session_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+def _append_history(history: list, item: dict, limit: int = 50) -> list:
+    history = (history or []) + [item]
+    if len(history) > limit:
+        history = history[-limit:]
+    return history
+
+def _history_rows(history: list) -> list[list[str]]:
+    # Dataframe 展示：编号、时间、文件名、计数摘要
+    rows = []
+    for i, it in enumerate(history or []):
+        in_name = os.path.basename(it.get("in_img", "") or "")
+        rows.append([str(i), it.get("ts", ""), in_name, it.get("out_text", "")])
+    return rows
+
+def _on_history_select(evt: gr.SelectData, history: list):
+    """
+    点击历史行：回填 in_img/out_img/out_txt
+    Dataframe 的 evt.index 通常是 (row, col)
+    """
+    if not history:
+        return gr.update(), gr.update(), gr.update()
+
+    idx = evt.index
+    if isinstance(idx, (tuple, list)):
+        idx = idx[0]
+    try:
+        idx = int(idx)
+    except Exception:
+        return gr.update(), gr.update(), gr.update()
+
+    if idx < 0 or idx >= len(history):
+        return gr.update(), gr.update(), gr.update()
+
+    it = history[idx]
+    return it.get("in_img"), it.get("out_img"), it.get("out_text")
+
+def _on_history_gallery_select(evt: gr.SelectData, history: list):
+    """
+    点击 Gallery：evt.index 通常是 int
+    """
+    if not history:
+        return gr.update(), gr.update(), gr.update()
+
+    idx = evt.index
+    try:
+        idx = int(idx)
+    except Exception:
+        return gr.update(), gr.update(), gr.update()
+
+    if idx < 0 or idx >= len(history):
+        return gr.update(), gr.update(), gr.update()
+
+    it = history[idx]
+    return it.get("in_img"), it.get("out_img"), it.get("out_text")
+
+
+def export_single_history(session_dir: str, history: list):
+    """
+    导出本次会话单图历史：
+      - counts.xlsx: 输入文件名、计数/状态（从 out_text 解析）
+      - visualizations.zip: 历史预测输出图（out_img）
+    Returns: (excel_path, zip_path)
+    """
+    if not session_dir:
+        return None, None
+    if not history:
+        raise gr.Error("本次会话还没有历史记录，无法导出。")
+
+    sess_dir = Path(session_dir)
+    _ensure_dir(sess_dir)
+
+    # 1) Excel
+    rows = []
+    for it in (history or []):
+        in_name = os.path.basename(it.get("in_img", "") or "")
+        out_text = (it.get("out_text", "") or "").strip()
+
+        # 从 "计数值： X" 里解析数字，解析失败就原样写
+        cnt_val = out_text
+        try:
+            # 兼容中文冒号/英文冒号
+            s = out_text.replace("：", ":")
+            if ":" in s:
+                cnt_val = s.split(":", 1)[1].strip()
+        except Exception:
+            pass
+
+        rows.append([in_name, cnt_val, it.get("ts", ""), it.get("out_img", "")])
+
+    excel_path = str(sess_dir / "single_history_counts.xlsx")
+    try:
+        df = pd.DataFrame(rows, columns=["输入文件", "计数/状态", "时间", "输出图路径"])
+        df.to_excel(excel_path, index=False)
+    except Exception as e:
+        raise gr.Error(f"Excel导出失败：{e}")
+
+    # 2) zip 可视化
+    zip_path = str(sess_dir / "single_history_visualizations.zip")
+    try:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            added = 0
+            for it in (history or []):
+                out_img = it.get("out_img")
+                if out_img and os.path.isfile(out_img):
+                    # 只把文件名放进压缩包
+                    zf.write(out_img, arcname=os.path.basename(out_img))
+                    added += 1
+        if added == 0:
+            # 仍返回zip，但提示更明确
+            raise gr.Error("历史里没有找到可打包的输出图像文件。")
+    except gr.Error:
+        raise
+    except Exception as e:
+        raise gr.Error(f"可视化打包失败：{e}")
+
+    return excel_path, zip_path
+
 
 USER_CREDENTIALS = {"admin": "654321"}
 
@@ -367,75 +558,219 @@ def check_login(username, password):
         return False, "用户名或密码错误！"
 
 def gradio_demo():
-    with gr.Blocks(title="大豆胞囊虫计数系统 - 请先登录") as demo:
-        # 登录界面（初始显示）
+
+    candidate_example_files = [
+        "visualizations_cache/test_samples/2025.1.5_2025.1.5-1_17-2.jpg",
+        "visualizations_cache/test_samples/2025.1.5_2025.1.5-1_24S3000-1-3.jpg",
+        "visualizations_cache/test_samples/2025.1.5_2025.1.5-3_17-3.jpg",
+        "visualizations_cache/test_samples/24S2982-1-1.jpg",
+        "visualizations_cache/test_samples/LZX212-3.jpg"
+    ]
+    single_examples = [[p] for p in candidate_example_files if os.path.isfile(p)]
+
+    candidate_zip_files = [
+        "visualizations_cache/test_samples/test.zip",
+    ]
+    zip_examples = [[p] for p in candidate_zip_files if os.path.isfile(p)]
+    watermark_css = """
+            #login_section, #main_section {
+                position: relative;
+            }
+            .gradio-container {
+                background-image: none !important;
+            }
+
+            /* login/main 共用水印样式 */
+            #login_section .watermark,
+            #main_section .watermark {
+                position: absolute;
+                top: 0;
+                right: 0;
+                height: calc(2.6em + 1.2em + 12px);  /* 约等于两行Markdown标题高度 + 间距 */
+                width: auto;
+                z-index: 5;
+                pointer-events: none;
+                display: flex;
+                align-items: flex-start;
+                justify-content: flex-end;
+            }
+
+            #login_section .watermark img,
+            #main_section .watermark img {
+                height: 100%;
+                width: auto;
+                object-fit: contain;
+                display: block;
+            }
+        """
+    with gr.Blocks(title="大豆胞囊虫计数", css=watermark_css) as demo:
+        logo_abs = os.path.abspath("visualizations_cache/logos/logo.png")
+        session_id_state = gr.State(value=None)
+        session_dir_state = gr.State(value=None)
+        single_history_state = gr.State(value=[])
+
+        
+        def _init_session():
+            sid, sdir = _new_session()
+            _clear_session_dir(sdir)
+            os.makedirs(sdir, exist_ok=True)
+            return sid, sdir, [], [], []
+        
         with gr.Column(visible=True, elem_id="login_section") as login_section:
+            # 在登录区内放一个绝对定位的水印（高度由CSS控制为“两行Markdown高度”）
+            gr.HTML(f'<div class="watermark"><img src="file={logo_abs}" /></div>')
             gr.Markdown("# 🔐 大豆胞囊虫计数系统")
             gr.Markdown("### 请先登录以使用系统")
             
             with gr.Row():
                 username = gr.Textbox(
-                    label="用户名", 
+                    label="用户名",
                     value="admin",  # 默认用户名
                     placeholder="输入用户名",
                     scale=2
                 )
             with gr.Row():
                 password = gr.Textbox(
-                    label="密码", 
+                    label="密码",
                     type="password",
                     value="",  # 默认密码
                     placeholder="输入密码",
                     scale=2
                 )
-            
+
             with gr.Row():
                 login_btn = gr.Button("登录", variant="primary", size="lg")
                 clear_btn = gr.Button("清除", size="lg")
-            
+
             login_status = gr.Textbox(label="登录状态", visible=False)
-        
+
         # 主应用界面（初始隐藏）
         with gr.Column(visible=False, elem_id="main_section") as main_section:
-            gr.Markdown("# 🌱 大豆胞囊虫计数 Demo")
+            gr.HTML(f'<div class="watermark"><img src="file={logo_abs}" /></div>')
+            gr.Markdown("# 🌱 大豆胞囊虫计数")
+            gr.Markdown("### 请选择单图推理或批量处理数据")
             
+
             with gr.Tab("单图精细化点回归计数"):
                 with gr.Row():
-                    in_img = gr.Image(type="filepath", label="上传图片")
+                    with gr.Column(scale=1):
+                        in_img = gr.Image(
+                            type="filepath",
+                            label="上传图片",
+                            height=None,
+                            width=None
+                        )
+                    with gr.Column(scale=1):
+                        out_img = gr.Image(
+                            type="filepath",
+                            label="预测结果",
+                            height=None,
+                            width=None
+                        )
                 with gr.Row():
                     clear_btn_main = gr.Button("清除")
                     submit_btn = gr.Button("提交", variant="primary")
-                with gr.Row():
-                    out_img = gr.Image(type="filepath", label="预测结果")
+
                 with gr.Row():
                     out_txt = gr.Textbox(label="统计信息", lines=1)
+
+                # 一键例子（点一下自动把例图填入输入框）
+                if single_examples:
+                    gr.Examples(
+                        examples=single_examples,
+                        inputs=[in_img],
+                        label="单图测试用例"
+                    )
+                single_history_gallery = gr.Gallery(
+                    label="历史预测输出（点击回填）",
+                    columns=5,
+                    height=300, 
+                    show_label=True,
+                    allow_preview=True,
+                    object_fit="contain", 
+                    )
+                single_history_df = gr.Dataframe(
+                    headers=["序号", "时间", "输入文件", "计数输出"],
+                    value=[],
+                    interactive=False,
+                    row_count=(0, "dynamic"),
+                    col_count=(4, "fixed"),
+                    label="历史预测（点击回填）",
+                    wrap=True,
+                    height=280
+                    )
+
                 
-                submit_btn.click(fn=predict, inputs=[in_img], outputs=[out_img, out_txt])
+                demo.load(
+                        _init_session,
+                        inputs=None,
+                        outputs=[
+                            session_id_state,
+                            session_dir_state,
+                            single_history_state,
+                            single_history_df,
+                            single_history_gallery,
+                        ],
+                    )
+                single_history_df.select(
+                    fn=_on_history_select,
+                    inputs=[single_history_state],
+                    outputs=[in_img, out_img, out_txt],
+                    )
+                single_history_gallery.select(
+                    fn=_on_history_gallery_select,
+                    inputs=[single_history_state],
+                    outputs=[in_img, out_img, out_txt],
+                    )
+
+                
+                submit_btn.click(
+                    fn=predict,
+                    inputs=[in_img, session_dir_state, single_history_state],
+                    outputs=[out_img, out_txt, single_history_state, single_history_df, single_history_gallery],
+                    )
                 clear_btn_main.click(
-                    fn=lambda: [None, None, None], 
-                    inputs=None, 
-                    outputs=[in_img, out_img, out_txt]
-                )
-            
+                    fn=lambda: [None, None, [], [], []],
+                    inputs=None,
+                    outputs=[in_img, out_img, single_history_state, single_history_df, single_history_gallery],
+                    )
+                with gr.Row():
+                    export_single_btn = gr.Button("导出历史记录", variant="primary")
+
+                with gr.Row():
+                    single_out_excel = gr.File(label="历史记录报表")
+                    single_out_viszip = gr.File(label="历史记录可视化")
+
             with gr.Tab("高通量批量图像分析"):
                 zip_in = gr.File(label="上传 .zip 压缩包文件", file_types=[".zip"])
                 batch_btn = gr.Button("开始批量计数", variant="primary")
-                
+
                 with gr.Row():
                     out_excel = gr.File(label="导出计数报表")
                     out_viszip = gr.File(label="下载所有可视化")
-                
+
                 out_table = gr.Dataframe(headers=["文件名", "计数/状态"], label="结果", wrap=True)
+
+                # 一键例子（点一下自动把zip填入输入框）
+                if zip_examples:
+                    gr.Examples(
+                        examples=zip_examples,
+                        inputs=[zip_in],
+                        label="批量测试用例"
+                    )
+
                 batch_btn.click(
                     fn=predict_zip,
                     inputs=[zip_in],
                     outputs=[out_excel, out_viszip, out_table]
                 )
-            
+                
+
+
             # 添加退出登录按钮
             with gr.Row():
                 logout_btn = gr.Button("退出登录", variant="secondary")
-        
+
         # 登录按钮事件
         def login_action(username, password):
             success, message = check_login(username, password)
@@ -456,7 +791,7 @@ def gradio_demo():
                     gr.update(visible=False),
                     gr.update(value=message, visible=True)
                 ]
-        
+
         # 清除按钮事件
         def clear_login():
             return [
@@ -464,7 +799,7 @@ def gradio_demo():
                 gr.update(value=""),
                 gr.update(visible=False)
             ]
-        
+
         # 退出登录事件
         def logout_action():
             return [
@@ -472,39 +807,46 @@ def gradio_demo():
                 gr.update(visible=False),  # 隐藏主界面
                 gr.update(value="", visible=False)
             ]
-        
+
         # 绑定事件
         login_btn.click(
             fn=login_action,
             inputs=[username, password],
             outputs=[login_section, main_section, login_status]
         )
-        
+
         clear_btn.click(
             fn=clear_login,
             inputs=None,
             outputs=[username, password, login_status]
         )
-        
+
         logout_btn.click(
             fn=logout_action,
             inputs=None,
             outputs=[login_section, main_section, login_status]
         )
         
+        export_single_btn.click(
+            fn=export_single_history,
+            inputs=[session_dir_state, single_history_state],
+            outputs=[single_out_excel, single_out_viszip],
+        )
+
         # 回车键也可以触发登录
         password.submit(
             fn=login_action,
             inputs=[username, password],
             outputs=[login_section, main_section, login_status]
         )
-    
+
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7860, 
+        server_port=7860,
         share=False,
         show_error=True,
-        debug=True
+        debug=True,
+        # allowed_paths=["visualizations_cache"]
     )
 
 if __name__ == "__main__":
