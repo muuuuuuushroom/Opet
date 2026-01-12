@@ -39,7 +39,7 @@ map_loss_coef: 1.0
 eos_coef: 0.5
 
 # dataset parameters
-dataset_file: SOY
+dataset_file: WuhanMetro
 data_path: ignore
 patch_size: 256   # patch_size = 512 originally
 num_workers: 2
@@ -77,4 +77,4 @@ one_key_zlt: False # attnsplit, boxquery, mixedloss
 # july stage para
 matcher: 'hun' # stable, hun 
 
-output_dir: base_pet333 #t_attnsplit_boxquery_mixedloss_ransize0618
+output_dir: base_pet #t_attnsplit_boxquery_mixedloss_ransize0618

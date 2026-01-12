@@ -12,7 +12,7 @@ syn_bn: 1 # 0
 num_workers: 4  # 2
 
 # model parameters
-backbone: swin_t # vgg16_bn, swin_t
+backbone: vgg16_bn #swin_t # vgg16_bn, swin_t
 position_embedding: sine
 attn_type: softmax
 dec_layers: 2
@@ -50,7 +50,7 @@ opt_query_con: False
 
 ### baseline setting
 attn_splitter: False
-Orattn: True
+Orattn: False
 encoder_free: False
 patch_size: 256   # patch_size = 512 originally
 
@@ -77,4 +77,4 @@ box_setting: 1 # 2 is qp from 0-1, 3?
 one_key_hfy: False # backbone Feature
 one_key_zlt: False # attnsplit, boxquery, mixedloss
 
-output_dir: base_4ddp
+output_dir: hun_

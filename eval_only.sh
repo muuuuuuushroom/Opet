@@ -1,5 +1,5 @@
 CUDA_VISIBLE_DEVICES='7' \
-python eval_rebuil_ev2.py \
+python eval_rebuild_only.py \
     --world_size=1 \
     --cfg="/data/zlt/RemoteSensePET/outputs/soy_newran/t_base/config.yaml" \
     --resume="/data/zlt/RemoteSensePET/outputs/soy_newran/t_base/best_checkpoint.pth" \

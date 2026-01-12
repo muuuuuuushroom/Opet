@@ -3,7 +3,6 @@ import torch
 import argparse
 from PIL import Image
 from models import build_model
-from engine_evon import DeNormalize
 
 from util.custom_log import *
 import os
@@ -22,13 +21,23 @@ import uuid
 
 # CFG='pretrained/config.yaml'
 # CKPT='pretrained/best_checkpoint.pth'
-CFG='outputs/soy_newran/base_pet333/config.yaml'
-CKPT='outputs/soy_newran/base_pet333/best_checkpoint.pth'
+CFG='outputs/WuhanMetro/base_pet/config.yaml'
+CKPT='outputs/WuhanMetro/base_pet/best_checkpoint.pth'
 
 global_model = None
 global_args = None
 global_transform = None  
 global_criterion = None
+
+class DeNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+        return tensor
 
 def load_model(cfg_path, device, ckpt_path):
     config = load_config(cfg_path)
